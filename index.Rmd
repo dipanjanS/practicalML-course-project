@@ -1,0 +1,246 @@
+---
+title: "Human Activity Recognition - Predicting weight-lifting styles"
+author: "Dipanjan Sarkar"
+date: "Sunday, June 22, 2014"
+output:
+  html_document:
+    highlight: tango
+    theme: readable
+---
+
+<br>
+
+## Executive Summary
+
+This detailed analysis has been performed to fulfill the requirements of the course project for the course [Practical Machine Learning][1] offered by the [Johns Hopkins University][2] on [Coursera][3]. Using devices such as Jawbone Up, Nike FuelBand, and Fitbit, it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+Read more about the data set details in the [Groupware@LES][4] website.
+
+The main objectives of this project are as follows
+
+   + Predict the manner in which they did the exercise depicted by the `classe` variable.
+   + Build a prediction model using different features and cross-validation technique.
+   + Calculate the out of sample error.
+   + Use the prediction model to predict `20` different test cases provided.
+<br>
+
+## Data retrieval, processing and transformation
+
+This section consists of the steps followed to setup our R environment, get the required data, clean and process it.
+
+
+#### <u>Setting up required environment in R</u>
+
+In the following code segment, we set the required global options and load the required packages in R.
+```{r message=FALSE}
+library(knitr)
+opts_chunk$set(cache=TRUE,echo=TRUE)
+options(width=120)
+library(caret)
+library(randomForest)
+library(pander)
+
+```
+<br>
+
+#### <u>Setting the working directory</u>
+
+Here we set the working directory as required, it can be changed according to your preference in your personal computer.
+```{r}
+
+setwd("E:/MOOCs/Coursera/Data Science - Specialization/8.   Practical Machine Learning/Course Project")
+
+```
+<br>
+
+#### <u>Getting the required data</u>
+
+The training data is available here: [Training Data][5]
+
+The test data is available here: [Testing Data][6]
+
+The data can be downloaded using the following code segment.
+```{r}
+
+downloadDataset <- function(URL="", destFile="data.csv"){
+  if(!file.exists(destFile)){
+    download.file(URL, destFile, method="curl")
+  }else{
+    message("Dataset already downloaded.")
+  }
+}
+
+trainURL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+downloadDataset(trainURL, "pml-training.csv")
+downloadDataset(testURL, "pml-testing.csv")
+
+```
+<br>
+
+#### <u>Loading the data</u>
+
+Next, we read the file using appropriate functions and load in the data using the following commands. We just check if the data is loaded correctly by viewing a few rows and columns of the data frame.
+```{r}
+
+training <- read.csv("pml-training.csv",na.strings=c("NA",""))
+testing <-read.csv("pml-testing.csv",na.strings=c("NA",""))
+dim(training)
+dim(testing)
+training[1:5,c('user_name','classe','num_window','roll_belt','pitch_belt')]
+
+```
+<br>
+
+#### <u>Processing the data</u>
+
+First, we check how many columns have `NA` values in the training and testing data and what is the quantity
+of `NA` values present.
+
+```{r comment=NA}
+sum(is.na(training))  # Total NA values
+t1 <- table(colSums(is.na(training)))
+t2 <- table(colSums(is.na(testing)))
+pandoc.table(t1, style = "grid", justify = 'left', caption = 'Training data column NA frequencies')
+pandoc.table(t2, style = "grid", justify = 'left', caption = 'Testing data column NA frequencies')
+
+```
+Looking at the above values it is clear that `60` variables have `0` NA values while the rest have `NA` values for almost all the rows of the dataset, so we are going to ignore them using the following code segment.
+
+```{r}
+
+# for training dataset
+columnNACounts <- colSums(is.na(training))        # getting NA counts for all columns
+badColumns <- columnNACounts >= 19000             # ignoring columns with majority NA values
+cleanTrainingdata <- training[!badColumns]        # getting clean data
+sum(is.na(cleanTrainingdata))                     # checking for NA values
+cleanTrainingdata <- cleanTrainingdata[, c(7:60)] # removing unnecessary columns
+
+# for testing dataset
+columnNACounts <- colSums(is.na(testing))         # getting NA counts for all columns
+badColumns <- columnNACounts >= 20                # ignoring columns with majority NA values
+cleanTestingdata <- testing[!badColumns]        # getting clean data
+sum(is.na(cleanTestingdata))                     # checking for NA values
+cleanTestingdata <- cleanTestingdata[, c(7:60)] # removing unnecessary columns
+
+```
+Now since we don't have any NA values we are ready to do some exploratory analysis and build our prediction model.
+<br>
+
+## Exploratory Data Analysis
+
+We look at some summary statistics and frequency plot for the `classe` variable.
+```{r comment=NA}
+
+s <- summary(cleanTrainingdata$classe)
+pandoc.table(s, style = "grid", justify = 'left', caption = '`classe` frequencies')
+plot(cleanTrainingdata$classe,col=rainbow(5),main = "`classe` frequency plot")
+
+```
+<br>
+
+## Model building
+
+In this section, we will build a machine learning model for predicting the `classe` value based on the other features of the dataset.
+<br>
+
+#### <u>Data partitioning</u>
+
+First we partition the `cleanTrainingdata` dataset into training and testing data sets for building our model using the following code segment.
+```{r}
+
+partition <- createDataPartition(y = cleanTrainingdata$classe, p = 0.6, list = FALSE)
+trainingdata <- cleanTrainingdata[partition, ]
+testdata <- cleanTrainingdata[-partition, ]
+
+```
+<br>
+
+#### <u>Model building</u>
+
+Now, using the features in the `trainingdata` dataset, we will build our model using the `Random Forest` machine learning technique.
+```{r}
+#trainInds <- sample(nrow(cleanTrainingdata), 3000)
+#trainingdata<-cleanTrainingdata[trainInds,]
+model <- train(classe ~ ., data = trainingdata, method = "rf", prox = TRUE, 
+               trControl = trainControl(method = "cv", number = 4, allowParallel = TRUE))
+model
+
+```
+We build the model using `4-fold` cross validation.
+<br>
+
+#### <u>In sample accuracy</u>
+
+Here, we calculate the `in sample` accuracy which is the prediction accuracy of our model on the training data set.
+```{r}
+
+training_pred <- predict(model, trainingdata)
+confusionMatrix(training_pred, trainingdata$classe)
+
+```
+Thus from the above statistics we see that the `in sample` accuracy value is `1` which is `100%`.
+<br>
+
+#### <u>Out of sample accuracy</u>
+
+Here, we calculate the `out of sample` accuracy which is the prediction accuracy of our model on the testing data set.
+```{r}
+
+testing_pred <- predict(model, testdata)
+confusionMatrix(testing_pred, testdata$classe)
+
+```
+Thus from the above statistics we see that the `out of sample` accuracy value is `0.998` which is `99.8%`.
+
+<br>
+
+## Prediction Assignment
+
+Here, we apply the machine learning algorithm we built above, to each of the 20 test cases in the testing data set provided.
+
+```{r}
+
+answers <- predict(model, cleanTestingdata)
+answers <- as.character(answers)
+answers
+
+```
+
+Finally, we write the answers to files as specified by the course instructor using the following code segment.
+```{r}
+
+pml_write_files = function(x) {
+    n = length(x)
+    for (i in 1:n) {
+        filename = paste0("problem_id_", i, ".txt")
+        write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, 
+            col.names = FALSE)
+    }
+}
+
+pml_write_files(answers)
+
+```
+On submission, we would see that all the predicted values are correct and a score of `20\20` is obtained.
+<br>
+
+## Conclusion
+
+We chose `Random Forest` as our machine learning algorithm for building our model because,
+
+   - Builds a highly accurate classifier.
+   - Can handle thousands of variables.
+   - Balances bias and variance trade-offs by settling for a balanced model.
+   - Using `k-fold` cross validation builds a robust model.
+   
+We also obtained a really good accuracy based on the statistics we obtained above.
+
+[1]: https://www.coursera.org/course/predmachlearn  "Regression Models"
+[2]: https://www.coursera.org/jhu "Johns Hopkins University"
+[3]: https://www.coursera.org/  "Coursera"
+[4]: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises#ixzz35JVTyesz "Groupware@LES"
+[5]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv "Training Data"
+[6]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv "Testing Data"
